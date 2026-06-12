@@ -77,23 +77,28 @@ export async function login(page: Page): Promise<void> {
   if (cookieStr) {
     const parsed = cookieStr.split("; ").map((pair) => {
       const [name, ...rest] = pair.split("=");
-      return { name, value: rest.join("="), domain: ".noest-dz.com", path: "/" };
+      return { name, value: rest.join("="), domain: "app.noest-dz.com", path: "/" };
     });
     await page.context().addCookies(parsed);
   }
 
   // Step 3: Navigate directly to dashboard with the authenticated session
-  await page.goto(BASE_URL + "/home", {
+  const response = await page.goto(BASE_URL + "/home", {
     waitUntil: "domcontentloaded",
     timeout: 30000,
   });
   await page.waitForTimeout(3000);
 
   // Verify login succeeded
-  const hasNavbarLinks = await page.locator("a").first().isVisible().catch(() => false);
-  if (!hasNavbarLinks) {
+  const pageTitle = await page.title();
+  const pageUrl = page.url();
+  const hasLinks = await page.locator("a").first().isVisible().catch(() => false);
+
+  if (!hasLinks || pageTitle.includes("403") || pageTitle.includes("Login")) {
     await captureError(page, "login-cookie-failed");
-    throw new Error("Login failed: dashboard not accessible with session cookie");
+    throw new Error(
+      `Login failed: dashboard returned "${pageTitle}" at ${pageUrl} — session cookie may be invalid or blocked`
+    );
   }
 }
 
