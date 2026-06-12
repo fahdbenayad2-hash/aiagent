@@ -26,11 +26,6 @@ async function main(): Promise<void> {
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--disable-web-security",
-      "--disable-features=IsolateOrigins,site-per-process",
-      "--disable-infobars",
-      "--disable-notifications",
-      "--disable-sync",
     ],
   });
   const context = await browser.newContext({
@@ -43,13 +38,6 @@ async function main(): Promise<void> {
   const page = await context.newPage();
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    Object.defineProperty(navigator, "plugins", {
-      get: () => [1, 2, 3, 4, 5],
-    });
-    Object.defineProperty(navigator, "languages", {
-      get: () => ["fr-FR", "fr", "en-US", "en"],
-    });
-    (window as any).chrome = { runtime: {} };
   });
 
   try {

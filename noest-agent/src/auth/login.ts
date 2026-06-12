@@ -1,10 +1,8 @@
-import { Page } from "playwright";
+import { chromium, Page } from "playwright";
 import path from "path";
 import fs from "fs";
 
 const BASE_URL = "https://app.noest-dz.com";
-const LOGIN_URL = "https://app.noest-dz.com/login";
-const DASHBOARD_URL = "https://app.noest-dz.com/home";
 
 export async function login(page: Page): Promise<void> {
   const email = process.env.NOEST_EMAIL;
@@ -16,57 +14,86 @@ export async function login(page: Page): Promise<void> {
     );
   }
 
-  // First visit the homepage to establish session/cookies
-  await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.waitForTimeout(2000);
-
-  // Click the login link instead of navigating directly
-  const loginLink = page.getByRole("link", { name: "Corporate Login" });
-  const loginLinkVisible = await loginLink.isVisible().catch(() => false);
-
-  if (loginLinkVisible) {
-    await loginLink.click();
-    await page.waitForURL("**/login", { timeout: 10000 });
-    await page.waitForTimeout(2000);
-  } else {
-    // Fallback: navigate directly
-    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(2000);
-  }
-
-  const emailField = page.locator("#email");
-  const emailVisible = await emailField.isVisible().catch(() => false);
-
-  if (!emailVisible) {
-    await captureError(page, "login-page-blocked");
-    const title = await page.title();
-    const url = page.url();
-    throw new Error(
-      `Login page blocked (${title} at ${url}) — the site may be blocking the request`
-    );
-  }
-
-  await emailField.fill(email);
-  await page.locator("#password").fill(password);
-  await page.getByRole("button", { name: "Se connecter" }).click();
-
+  // Step 1: API login to get authenticated cookies (bypasses browser block)
+  let cookieStr = "";
   try {
-    await page.waitForURL("**/home", { timeout: 20000 });
-  } catch {
-    await captureError(page, "login-timeout");
-    const url = page.url();
+    const r1 = await fetch(BASE_URL + "/login", {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      },
+    });
+    const h1 = await r1.text();
+    const csrf = h1.match(
+      /<input[^>]*name="_token"[^>]*value="([^"]+)"/
+    )?.[1];
+    if (!csrf) throw new Error("CSRF token not found");
+
+    const sc1 = r1.headers.get("set-cookie") || "";
+    const cookies: Record<string, string> = {};
+    sc1.split(/,(?=\s*\w+=)/).forEach((c) => {
+      const m = c.match(/^\s*([^=]+)=([^;]+)/);
+      if (m) cookies[m[1].trim()] = m[2];
+    });
+
+    const ck = Object.entries(cookies)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; ");
+
+    const r2 = await fetch(BASE_URL + "/login", {
+      method: "POST",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: ck,
+        Origin: BASE_URL,
+        Referer: BASE_URL + "/login",
+      },
+      body: new URLSearchParams({
+        _token: csrf,
+        email,
+        password,
+      }),
+      redirect: "manual",
+    });
+
+    const sc2 = r2.headers.get("set-cookie") || "";
+    sc2.split(/,(?=\s*\w+=)/).forEach((c) => {
+      const m = c.match(/^\s*([^=]+)=([^;]+)/);
+      if (m) cookies[m[1].trim()] = m[2];
+    });
+
+    cookieStr = Object.entries(cookies)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; ");
+  } catch (err) {
     throw new Error(
-      `Login failed: redirected to "${url}" instead of /home`
+      `Login failed: API pre-login error — ${err instanceof Error ? err.message : err}`
     );
   }
 
+  // Step 2: Set the authenticated cookies in the browser
+  if (cookieStr) {
+    const parsed = cookieStr.split("; ").map((pair) => {
+      const [name, ...rest] = pair.split("=");
+      return { name, value: rest.join("="), domain: ".noest-dz.com", path: "/" };
+    });
+    await page.context().addCookies(parsed);
+  }
+
+  // Step 3: Navigate directly to dashboard with the authenticated session
+  await page.goto(BASE_URL + "/home", {
+    waitUntil: "domcontentloaded",
+    timeout: 30000,
+  });
   await page.waitForTimeout(3000);
 
-  try {
-    await page.waitForSelector("a", { timeout: 10000 });
-  } catch {
-    await captureError(page, "login-links-missing");
-    throw new Error("Login failed: dashboard links not found after authentication");
+  // Verify login succeeded
+  const hasNavbarLinks = await page.locator("a").first().isVisible().catch(() => false);
+  if (!hasNavbarLinks) {
+    await captureError(page, "login-cookie-failed");
+    throw new Error("Login failed: dashboard not accessible with session cookie");
   }
 }
 
