@@ -1,4 +1,4 @@
-import { NavbarSnapshot, NotificationsResponse } from "../types.js";
+import { NotificationsResponse, DashboardSnapshot } from "../types.js";
 
 const BASE_URL = "https://app.noest-dz.com";
 
@@ -10,9 +10,12 @@ function parseCookie(cookieString: string, name: string): string | undefined {
   return undefined;
 }
 
-export async function getNavbarSnapshot(
+export async function getDashboardSnapshot(
   cookies: string
-): Promise<{ apiResponse: NotificationsResponse; snapshot: NavbarSnapshot }> {
+): Promise<{
+  apiResponse: NotificationsResponse;
+  snapshot: DashboardSnapshot;
+}> {
   const xsrfCookie = parseCookie(cookies, "XSRF-TOKEN");
   const xsrfToken = xsrfCookie ? decodeURIComponent(xsrfCookie) : "";
 
@@ -42,17 +45,34 @@ export async function getNavbarSnapshot(
 
   const data: NotificationsResponse = await res.json();
 
-  const snapshot: NavbarSnapshot = {
-    colisPrets: data.p_a_preparer,
-    enTraitement: data.en_transit,
-    enExpedition: { versHub: data.vers_hub, enHub: data.en_hub },
-    enLivraison: data.en_livraison,
-    suspendus: data.suspendus,
+  const snapshot: DashboardSnapshot = {
+    date: "",
+    pipeline: {
+      aExpedier: data.p_a_expedier,
+      aPreparer: data.p_a_preparer,
+      enPreparation: data.en_preparation,
+      enRamassage: data.en_ramassage,
+      enTraitement: data.en_transit,
+      versHub: data.vers_hub,
+      enHub: data.en_hub,
+      enLivraison: data.en_livraison,
+    },
+    problemes: {
+      suspendus: data.suspendus,
+      desaccord: data.desaccord ?? 0,
+    },
     retours: {
       chezStation: data.retours_chez_station,
       chezHubCentral: data.retours_hub_central,
-      prepares: data.retour_recu,
-      enTransit: data.retour_en_transit_stock,
+      enTransitStock: data.retour_en_transit_stock,
+      recu: data.retour_recu,
+    },
+    finance: {
+      livreNonEncaisse: data.livre_non_encaisse,
+      livreEncaisse: data.livre_encaisse,
+      recouvrements: data.recouvrements,
+      recouvres: data.recouvres ?? 0,
+      chequeEncours: data.cheque_encours ?? 0,
     },
   };
 

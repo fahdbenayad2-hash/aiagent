@@ -2,8 +2,12 @@ import { config } from "dotenv";
 import path from "path";
 import fs from "fs";
 import { login } from "./auth/login.js";
-import { getNavbarSnapshot } from "./collectors/navbarSnapshot.js";
-import { sendTelegramMessage } from "./notify/telegram.js";
+import { getDashboardSnapshot } from "./collectors/dashboardSnapshot.js";
+import { sendTelegramMessage, sendDailyDigest } from "./notify/telegram.js";
+import { getDb } from "./db/connection.js";
+import { saveSnapshot } from "./db/repositories/snapshotRepo.js";
+import { flattenSnapshot, computeDeltas } from "./analysis/deltas.js";
+import { evaluateAlerts } from "./alerts/rules.js";
 import { Snapshot } from "./types.js";
 
 config();
@@ -18,44 +22,103 @@ function getDateString(): string {
 
 async function main(): Promise<void> {
   try {
+    // 1. Auth
     console.log("Logging in to Noest Express...");
     const cookies = await login();
     console.log("Login successful.");
 
-    console.log("Reading navbar counters...");
-    const { apiResponse, snapshot: navbarCounts } =
-      await getNavbarSnapshot(cookies);
-
+    // 2. Collect
+    console.log("Reading dashboard data...");
+    const { apiResponse, snapshot: dashboard } =
+      await getDashboardSnapshot(cookies);
     const dateStr = getDateString();
+    dashboard.date = dateStr;
+    console.log("Data collected.");
+
+    // 3. Persist
+    console.log("Persisting to SQLite...");
+    const db = getDb();
+    const flatMetrics = flattenSnapshot(dashboard);
+    saveSnapshot(db, dateStr, apiResponse, flatMetrics);
+
+    // 4. Analyse
+    console.log("Computing deltas...");
+    const deltas = computeDeltas(flatMetrics, db, dateStr);
+    const alerts = evaluateAlerts(flatMetrics, deltas);
+
+    // 5. Write Phase-0-compatible JSON output
+    const navbarCounts = {
+      colisPrets: dashboard.pipeline.aPreparer,
+      enTraitement: dashboard.pipeline.enTraitement,
+      enExpedition: {
+        versHub: dashboard.pipeline.versHub,
+        enHub: dashboard.pipeline.enHub,
+      },
+      enLivraison: dashboard.pipeline.enLivraison,
+      suspendus: dashboard.problemes.suspendus,
+      retours: {
+        chezStation: dashboard.retours.chezStation,
+        chezHubCentral: dashboard.retours.chezHubCentral,
+        prepares: dashboard.retours.recu,
+        enTransit: dashboard.retours.enTransitStock,
+      },
+    };
+
     const snapshot: Snapshot = {
       date: dateStr,
       notificationsApi: apiResponse,
       navbarCounts,
+      dashboard,
+      flatMetrics,
+      deltaVsYesterday: deltas.vsYesterday,
+      deltaVs7dAvg: deltas.vs7dAvg,
+      alerts,
     };
 
     const outputDir = path.resolve("output");
     fs.mkdirSync(outputDir, { recursive: true });
     const filePath = path.join(outputDir, `snapshot-${dateStr}.json`);
     fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+    console.log(`Snapshot saved to ${filePath}`);
 
+    // 6. Notify
+    console.log("Sending daily digest...");
+    await sendDailyDigest(dashboard, flatMetrics, deltas, alerts);
+
+    // 7. Console summary
+    const d = dashboard;
     console.log("\n=== Noest Dashboard Snapshot ===");
     console.log(`Date: ${dateStr}`);
-    console.log(`  Colis prêts:       ${navbarCounts.colisPrets}`);
-    console.log(`  En traitement:     ${navbarCounts.enTraitement}`);
-    console.log(`  En expédition:`);
-    console.log(`    Vers Hub:        ${navbarCounts.enExpedition.versHub}`);
-    console.log(`    En Hub:          ${navbarCounts.enExpedition.enHub}`);
-    console.log(`  En livraison:      ${navbarCounts.enLivraison}`);
-    console.log(`  Suspendus:         ${navbarCounts.suspendus}`);
+    console.log(`  Pipeline:`);
+    console.log(`    À expédier:      ${d.pipeline.aExpedier}`);
+    console.log(`    À préparer:      ${d.pipeline.aPreparer}`);
+    console.log(`    En préparation:  ${d.pipeline.enPreparation}`);
+    console.log(`    En ramassage:    ${d.pipeline.enRamassage}`);
+    console.log(`    En traitement:   ${d.pipeline.enTraitement}`);
+    console.log(`    Vers Hub:        ${d.pipeline.versHub}`);
+    console.log(`    En Hub:          ${d.pipeline.enHub}`);
+    console.log(`    En livraison:    ${d.pipeline.enLivraison}`);
+    console.log(`  Problèmes:`);
+    console.log(`    Suspendus:       ${d.problemes.suspendus}`);
+    console.log(`    Désaccords:      ${d.problemes.desaccord}`);
     console.log(`  Retours:`);
-    console.log(`    Chez station:    ${navbarCounts.retours.chezStation}`);
-    console.log(
-      `    Chez hub central: ${navbarCounts.retours.chezHubCentral}`
-    );
-    console.log(`    Préparés:        ${navbarCounts.retours.prepares}`);
-    console.log(`    En transit:      ${navbarCounts.retours.enTransit}`);
+    console.log(`    Chez station:    ${d.retours.chezStation}`);
+    console.log(`    Hub central:     ${d.retours.chezHubCentral}`);
+    console.log(`    Transit stock:   ${d.retours.enTransitStock}`);
+    console.log(`    Reçus:           ${d.retours.recu}`);
+    console.log(`  Finance:`);
+    console.log(`    Livré non enc.:  ${d.finance.livreNonEncaisse}`);
+    console.log(`    Livré encaissé:  ${d.finance.livreEncaisse}`);
+    console.log(`    Recouvrements:   ${d.finance.recouvrements}`);
+    console.log(`    Recouvrés:       ${d.finance.recouvres}`);
+    console.log(`    Chèques encours: ${d.finance.chequeEncours}`);
+    if (alerts.length > 0) {
+      console.log(`  Alertes (${alerts.length}):`);
+      for (const a of alerts) console.log(`    ${a}`);
+    } else {
+      console.log(`  Alertes: ✅ Tout est normal`);
+    }
     console.log("================================");
-    console.log(`Snapshot saved to ${filePath}`);
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Unknown error";
