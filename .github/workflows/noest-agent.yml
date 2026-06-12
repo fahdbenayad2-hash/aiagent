@@ -18,13 +18,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: "npm"
           cache-dependency-path: noest-agent/package-lock.json
 
       - run: npm ci
-
-      - run: npx playwright install --with-deps chromium
 
       - name: Run Noest agent
         run: npm start

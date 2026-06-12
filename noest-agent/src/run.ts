@@ -1,4 +1,3 @@
-import { chromium } from "playwright";
 import { config } from "dotenv";
 import path from "path";
 import fs from "fs";
@@ -18,38 +17,21 @@ function getDateString(): string {
 }
 
 async function main(): Promise<void> {
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-    ],
-  });
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 720 },
-    locale: "fr-FR",
-    timezoneId: "Africa/Algiers",
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  });
-  const page = await context.newPage();
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-  });
-
   try {
     console.log("Logging in to Noest Express...");
-    await login(page);
+    const cookies = await login();
     console.log("Login successful.");
 
     console.log("Reading navbar counters...");
-    const navbarCounts = await getNavbarSnapshot(page);
+    const { apiResponse, snapshot: navbarCounts } =
+      await getNavbarSnapshot(cookies);
 
     const dateStr = getDateString();
-    const snapshot: Snapshot = { date: dateStr, navbarCounts };
+    const snapshot: Snapshot = {
+      date: dateStr,
+      notificationsApi: apiResponse,
+      navbarCounts,
+    };
 
     const outputDir = path.resolve("output");
     fs.mkdirSync(outputDir, { recursive: true });
@@ -88,8 +70,6 @@ async function main(): Promise<void> {
     }
 
     process.exit(1);
-  } finally {
-    await browser.close();
   }
 }
 

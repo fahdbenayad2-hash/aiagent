@@ -1,88 +1,60 @@
-import { Page } from "playwright";
-import { NavbarSnapshot } from "../types.js";
-import path from "path";
-import fs from "fs";
+import { NavbarSnapshot, NotificationsResponse } from "../types.js";
 
-function extractNumber(text: string | null): number {
-  if (!text) return 0;
-  const digits = text.replace(/\D/g, "");
-  return digits ? parseInt(digits, 10) : 0;
-}
+const BASE_URL = "https://app.noest-dz.com";
 
-async function captureError(page: Page, label: string): Promise<void> {
-  const dir = path.resolve("output");
-  fs.mkdirSync(dir, { recursive: true });
-  await page.screenshot({
-    path: path.join(dir, `error-${label}-${Date.now()}.png`),
-    fullPage: true,
-  });
-}
-
-async function readBadge(
-  page: Page,
-  itemName: string
-): Promise<number> {
-  const link = page
-    .locator("a")
-    .filter({ hasText: new RegExp(itemName, "i") })
-    .first();
-  try {
-    await link.waitFor({ state: "attached", timeout: 10000 });
-  } catch {
-    await captureError(
-      page,
-      `badge-${itemName.replace(/\s+/g, "-")}-not-found`
-    );
-    throw new Error(`Navbar item not found: "${itemName}"`);
+function parseCookie(cookieString: string, name: string): string | undefined {
+  for (const pair of cookieString.split("; ")) {
+    const [k, ...rest] = pair.split("=");
+    if (k.trim() === name) return rest.join("=");
   }
-  const text = await link.innerText();
-  return extractNumber(text);
-}
-
-async function readSubBadge(
-  page: Page,
-  itemName: string
-): Promise<number> {
-  const item = page
-    .locator("a")
-    .filter({ hasText: new RegExp(itemName, "i") })
-    .first();
-  try {
-    await item.waitFor({ state: "attached", timeout: 5000 });
-    const text = await item.innerText();
-    return extractNumber(text);
-  } catch {
-    await captureError(
-      page,
-      `subitem-${itemName.replace(/\s+/g, "-")}-not-found`
-    );
-    throw new Error(`Navbar sub-item not found: "${itemName}"`);
-  }
+  return undefined;
 }
 
 export async function getNavbarSnapshot(
-  page: Page
-): Promise<NavbarSnapshot> {
-  const colisPrets = await readBadge(page, "Colis prêts");
-  const enTraitement = await readBadge(page, "En traitement");
+  cookies: string
+): Promise<{ apiResponse: NotificationsResponse; snapshot: NavbarSnapshot }> {
+  const xsrfCookie = parseCookie(cookies, "XSRF-TOKEN");
+  const xsrfToken = xsrfCookie ? decodeURIComponent(xsrfCookie) : "";
 
-  const versHub = await readSubBadge(page, "Vers Hub");
-  const enHub = await readSubBadge(page, "En Hub");
-
-  const enLivraison = await readBadge(page, "En livraison");
-  const suspendus = await readBadge(page, "Suspendus");
-
-  const chezStation = await readSubBadge(page, "Retours chez station");
-  const chezHubCentral = await readSubBadge(page, "Retours chez hub central");
-  const prepares = await readSubBadge(page, "Retours préparés");
-  const enTransit = await readSubBadge(page, "Retours en transit");
-
-  return {
-    colisPrets,
-    enTraitement,
-    enExpedition: { versHub, enHub },
-    enLivraison,
-    suspendus,
-    retours: { chezStation, chezHubCentral, prepares, enTransit },
+  const headers: Record<string, string> = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Cookie: cookies,
+    Accept: "application/json, text/plain, */*",
+    "X-Requested-With": "XMLHttpRequest",
+    Referer: BASE_URL + "/home",
   };
+  if (xsrfToken) {
+    headers["X-XSRF-TOKEN"] = xsrfToken;
+  }
+
+  const res = await fetch(BASE_URL + "/get/notifications", {
+    method: "POST",
+    headers,
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `Notifications API returned ${res.status} ${res.statusText} — ${body.substring(0, 200)}`
+    );
+  }
+
+  const data: NotificationsResponse = await res.json();
+
+  const snapshot: NavbarSnapshot = {
+    colisPrets: data.p_a_preparer,
+    enTraitement: data.en_transit,
+    enExpedition: { versHub: data.vers_hub, enHub: data.en_hub },
+    enLivraison: data.en_livraison,
+    suspendus: data.suspendus,
+    retours: {
+      chezStation: data.retours_chez_station,
+      chezHubCentral: data.retours_hub_central,
+      prepares: data.retour_recu,
+      enTransit: data.retour_en_transit_stock,
+    },
+  };
+
+  return { apiResponse: data, snapshot };
 }
