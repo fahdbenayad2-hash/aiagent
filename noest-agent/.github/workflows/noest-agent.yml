@@ -1,0 +1,37 @@
+name: Noest Agent
+
+on:
+  schedule:
+    # 07:00 and 19:00 Algeria time (UTC+1) => 06:00 and 18:00 UTC
+    - cron: "0 6 * * *"
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      - name: Run Noest agent
+        run: npm start
+        env:
+          NOEST_EMAIL: ${{ secrets.NOEST_EMAIL }}
+          NOEST_PASSWORD: ${{ secrets.NOEST_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-${{ github.run_id }}
+          path: output/
+          retention-days: 30
