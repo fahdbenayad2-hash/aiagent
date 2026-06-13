@@ -30,6 +30,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
       - uses: actions/upload-artifact@v4
         with:

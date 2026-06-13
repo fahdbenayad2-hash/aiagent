@@ -100,6 +100,8 @@ export interface Snapshot {
   deltaVsYesterday: FlatMetrics;
   deltaVs7dAvg: FlatMetrics;
   alerts: string[];
+  suspendedDetails: SuspendedDetails | null;
+  analyses: AiAnalysis[];
 }
 
 // Alert rule
@@ -111,4 +113,45 @@ export interface AlertRule {
     current: FlatMetrics,
     deltas: { vsYesterday: FlatMetrics; vs7dAvg: FlatMetrics }
   ) => string | null;
+}
+
+// Phase 2 — Suspended orders
+export interface SuspendedOrder {
+  tracking: string;
+  client: string;
+  montant: number;
+  dateColis: string;
+  statut: string;
+  ville: string;
+  wilaya: string;
+  totalPercu: number;
+  aPercu: number;
+}
+
+export interface SuiviEntry {
+  date: string;
+  text: string;
+  location: string;
+}
+
+export interface SuspendedDetails {
+  orders: SuspendedOrder[];
+  suiviMap: Record<string, SuiviEntry[]>;
+  totalAmount: number;
+  orderCount: number;
+}
+
+export interface AiAnalysis {
+  summary: string;
+  riskLevel: "low" | "medium" | "high";
+  totalBlockedAmount: number;
+  keyIssues: string[];
+  recommendations: string[];
+  oldestOrderDays: number;
+}
+
+// Phase 2 fields on Snapshot
+export interface Phase2Data {
+  suspendedDetails: SuspendedDetails | null;
+  analyses: AiAnalysis[];
 }

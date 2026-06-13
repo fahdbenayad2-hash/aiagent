@@ -3,12 +3,16 @@ import path from "path";
 import fs from "fs";
 import { login } from "./auth/login.js";
 import { getDashboardSnapshot } from "./collectors/dashboardSnapshot.js";
+import { getSuspendedOrders } from "./collectors/suspendedOrders.js";
+import { getSuiviHistoryBatch } from "./collectors/suiviHistory.js";
 import { sendTelegramMessage, sendDailyDigest } from "./notify/telegram.js";
 import { getDb } from "./db/connection.js";
 import { saveSnapshot } from "./db/repositories/snapshotRepo.js";
 import { flattenSnapshot, computeDeltas } from "./analysis/deltas.js";
 import { evaluateAlerts } from "./alerts/rules.js";
-import { Snapshot } from "./types.js";
+import { buildSuspendedDetails } from "./analysis/suspendedAnalysis.js";
+import { analyzeSuspendedOrders } from "./analysis/aiAnalysis.js";
+import { Snapshot, SuspendedDetails, AiAnalysis } from "./types.js";
 
 config();
 
@@ -46,7 +50,33 @@ async function main(): Promise<void> {
     const deltas = computeDeltas(flatMetrics, db, dateStr);
     const alerts = evaluateAlerts(flatMetrics, deltas);
 
-    // 5. Write Phase-0-compatible JSON output
+    // 4b. Phase 2 — Suspended orders + AI analysis
+    let suspendedDetails: SuspendedDetails | null = null;
+    let analyses: AiAnalysis[] = [];
+
+    if (dashboard.problemes.suspendus > 0) {
+      console.log("Fetching suspended orders...");
+      const orders = await getSuspendedOrders(cookies);
+      if (orders.length > 0) {
+        console.log(`Found ${orders.length} suspended orders. Fetching suivi history...`);
+        const trackings = orders.map((o) => o.tracking);
+        const suiviMap = await getSuiviHistoryBatch(cookies, trackings);
+        suspendedDetails = buildSuspendedDetails(orders, suiviMap);
+        console.log(`Total blocked amount: ${suspendedDetails.totalAmount} DA`);
+
+        console.log("Running AI analysis via Gemini...");
+        analyses = await analyzeSuspendedOrders(orders, suiviMap);
+        for (const a of analyses) {
+          console.log(`  Risk: ${a.riskLevel} — ${a.summary.substring(0, 80)}`);
+        }
+      } else {
+        console.log("No suspended order details retrieved.");
+      }
+    } else {
+      console.log("No suspended orders to analyze.");
+    }
+
+    // 5. Write JSON output
     const navbarCounts = {
       colisPrets: dashboard.pipeline.aPreparer,
       enTraitement: dashboard.pipeline.enTraitement,
@@ -73,6 +103,8 @@ async function main(): Promise<void> {
       deltaVsYesterday: deltas.vsYesterday,
       deltaVs7dAvg: deltas.vs7dAvg,
       alerts,
+      suspendedDetails,
+      analyses,
     };
 
     const outputDir = path.resolve("output");
@@ -83,7 +115,7 @@ async function main(): Promise<void> {
 
     // 6. Notify
     console.log("Sending daily digest...");
-    await sendDailyDigest(dashboard, flatMetrics, deltas, alerts);
+    await sendDailyDigest(dashboard, flatMetrics, deltas, alerts, suspendedDetails, analyses);
 
     // 7. Console summary
     const d = dashboard;
@@ -117,6 +149,17 @@ async function main(): Promise<void> {
       for (const a of alerts) console.log(`    ${a}`);
     } else {
       console.log(`  Alertes: ✅ Tout est normal`);
+    }
+    if (suspendedDetails) {
+      console.log(`  Suspendus:`);
+      console.log(`    Commandes:     ${suspendedDetails.orderCount}`);
+      console.log(`    Total bloqué:  ${suspendedDetails.totalAmount.toLocaleString()} DA`);
+      if (analyses.length > 0) {
+        console.log(`    Analyses IA:   ${analyses.length}`);
+        for (const a of analyses) {
+          console.log(`      [${a.riskLevel}] ${a.summary.substring(0, 100)}`);
+        }
+      }
     }
     console.log("================================");
   } catch (err) {

@@ -1,4 +1,4 @@
-import { DashboardSnapshot, FlatMetrics } from "../types.js";
+import { DashboardSnapshot, FlatMetrics, SuspendedDetails, AiAnalysis } from "../types.js";
 
 const TG_TOKEN = () => process.env.TELEGRAM_BOT_TOKEN;
 const TG_CHAT = () => process.env.TELEGRAM_CHAT_ID;
@@ -54,7 +54,9 @@ export async function sendDailyDigest(
   snapshot: DashboardSnapshot,
   flatMetrics: FlatMetrics,
   deltas: { vsYesterday: FlatMetrics; vs7dAvg: FlatMetrics },
-  alerts: string[]
+  alerts: string[],
+  suspendedDetails?: SuspendedDetails | null,
+  analyses?: AiAnalysis[]
 ): Promise<void> {
   const token = TG_TOKEN();
   const chatId = TG_CHAT();
@@ -91,8 +93,46 @@ export async function sendDailyDigest(
     `Recouvrements: ${finance.recouvrements} / Recouvrés: ${finance.recouvres}`,
     `Chèques en attente: ${finance.chequeEncours}`,
     "",
-    "🔔 <b>Alertes</b>",
+    "🔴 <b>Commandes Suspendues</b>",
   ];
+
+  if (suspendedDetails && suspendedDetails.orders.length > 0) {
+    const sorted = [...suspendedDetails.orders].sort(
+      (a, b) => b.montant - a.montant
+    );
+    for (const order of sorted.slice(0, 10)) {
+      const clientClean = order.client.substring(0, 20);
+      lines.push(
+        `• ${order.tracking} — ${clientClean}: ${order.montant.toLocaleString()} DA`
+      );
+    }
+    if (sorted.length > 10) {
+      lines.push(`  … et ${sorted.length - 10} autre(s)`);
+    }
+    lines.push(`<b>Total bloqué: ${suspendedDetails.totalAmount.toLocaleString()} DA</b>`);
+
+    if (analyses && analyses.length > 0) {
+      lines.push("");
+      for (const a of analyses) {
+        const icon = a.riskLevel === "high" ? "🔴" : a.riskLevel === "medium" ? "🟡" : "ℹ️";
+        lines.push(`${icon} <b>Analyse:</b> ${a.summary}`);
+        if (a.keyIssues.length > 0) {
+          for (const issue of a.keyIssues.slice(0, 3)) {
+            lines.push(`  • ${issue}`);
+          }
+        }
+        if (a.recommendations.length > 0) {
+          for (const rec of a.recommendations.slice(0, 2)) {
+            lines.push(`  → ${rec}`);
+          }
+        }
+      }
+    }
+  } else {
+    lines.push("✅ Aucune commande suspendue");
+  }
+
+  lines.push("", "🔔 <b>Alertes</b>");
 
   if (isFirstRun) {
     lines.push("ℹ️ Première mesure — aucune comparaison disponible");
