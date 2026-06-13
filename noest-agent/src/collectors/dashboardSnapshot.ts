@@ -11,13 +11,18 @@ function parseCookie(cookieString: string, name: string): string | undefined {
 }
 
 export async function getDashboardSnapshot(
-  cookies: string
+  cookies: string,
+  csrfToken?: string
 ): Promise<{
   apiResponse: NotificationsResponse;
   snapshot: DashboardSnapshot;
 }> {
-  const xsrfCookie = parseCookie(cookies, "XSRF-TOKEN");
-  const xsrfToken = xsrfCookie ? decodeURIComponent(xsrfCookie) : "";
+  // Use raw CSRF token (preferred) or fall back to encrypted XSRF-TOKEN from cookie
+  let csrf = csrfToken;
+  if (!csrf) {
+    const xsrfCookie = parseCookie(cookies, "XSRF-TOKEN");
+    csrf = xsrfCookie ? decodeURIComponent(xsrfCookie) : "";
+  }
 
   const headers: Record<string, string> = {
     "User-Agent":
@@ -27,8 +32,8 @@ export async function getDashboardSnapshot(
     "X-Requested-With": "XMLHttpRequest",
     Referer: BASE_URL + "/home",
   };
-  if (xsrfToken) {
-    headers["X-XSRF-TOKEN"] = xsrfToken;
+  if (csrf) {
+    headers["X-CSRF-TOKEN"] = csrf;
   }
 
   const res = await fetch(BASE_URL + "/get/notifications", {

@@ -1,4 +1,4 @@
-import { DashboardSnapshot, FlatMetrics, SuspendedDetails, AiAnalysis } from "../types.js";
+import { DashboardSnapshot, FlatMetrics, SuspendedDetails, NonEncaisseDetails, AiAnalysis } from "../types.js";
 
 const TG_TOKEN = () => process.env.TELEGRAM_BOT_TOKEN;
 const TG_CHAT = () => process.env.TELEGRAM_CHAT_ID;
@@ -56,7 +56,9 @@ export async function sendDailyDigest(
   deltas: { vsYesterday: FlatMetrics; vs7dAvg: FlatMetrics },
   alerts: string[],
   suspendedDetails?: SuspendedDetails | null,
-  analyses?: AiAnalysis[]
+  analyses?: AiAnalysis[],
+  nonEncaisseDetails?: NonEncaisseDetails | null,
+  nonEncaisseAnalysis?: AiAnalysis | null
 ): Promise<void> {
   const token = TG_TOKEN();
   const chatId = TG_CHAT();
@@ -130,6 +132,43 @@ export async function sendDailyDigest(
     }
   } else {
     lines.push("✅ Aucune commande suspendue");
+  }
+
+  lines.push("", "🔵 <b>Livré Non Encaissé</b>");
+
+  if (nonEncaisseDetails && nonEncaisseDetails.orders.length > 0) {
+    const sorted = [...nonEncaisseDetails.orders].sort(
+      (a, b) => b.montant - a.montant
+    );
+    for (const order of sorted.slice(0, 10)) {
+      const clientClean = order.client.substring(0, 20);
+      lines.push(
+        `• ${order.tracking} — ${clientClean}: ${order.montant.toLocaleString()} DA (livré ${order.livredAt.substring(0, 10)})`
+      );
+    }
+    if (sorted.length > 10) {
+      lines.push(`  … et ${sorted.length - 10} autre(s)`);
+    }
+    lines.push(`<b>Total non encaissé: ${nonEncaisseDetails.totalAmount.toLocaleString()} DA</b>`);
+    lines.push(`<b>Somme livrée: ${nonEncaisseDetails.sumLivred.toLocaleString()} DA</b>`);
+
+    if (nonEncaisseAnalysis) {
+      lines.push("");
+      const icon = nonEncaisseAnalysis.riskLevel === "high" ? "🔴" : nonEncaisseAnalysis.riskLevel === "medium" ? "🟡" : "ℹ️";
+      lines.push(`${icon} <b>Analyse:</b> ${nonEncaisseAnalysis.summary}`);
+      if (nonEncaisseAnalysis.keyIssues.length > 0) {
+        for (const issue of nonEncaisseAnalysis.keyIssues.slice(0, 3)) {
+          lines.push(`  • ${issue}`);
+        }
+      }
+      if (nonEncaisseAnalysis.recommendations.length > 0) {
+        for (const rec of nonEncaisseAnalysis.recommendations.slice(0, 2)) {
+          lines.push(`  → ${rec}`);
+        }
+      }
+    }
+  } else {
+    lines.push("✅ Aucune commande non encaissée");
   }
 
   lines.push("", "🔔 <b>Alertes</b>");

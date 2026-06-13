@@ -1,24 +1,29 @@
-import { SuspendedOrder, SuiviEntry, AiAnalysis } from "../types.js";
+import { SuspendedOrder, SuiviEntry, NonEncaisseOrder, AiAnalysis } from "../types.js";
 
-const GEMINI_API_KEY = () => process.env.GEMINI_API_KEY;
+const GROQ_API_KEY = () => process.env.GROQ_API_KEY;
+const GROQ_MODEL = "llama-3.3-70b-versatile";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-interface GeminiResponseCandidate {
-  content?: {
-    parts?: Array<{ text?: string }>;
-  };
+interface GroqResponse {
+  choices?: Array<{ message?: { content?: string } }>;
 }
 
-interface GeminiResponse {
-  candidates?: GeminiResponseCandidate[];
+interface ParsedAnalysis {
+  summary?: string;
+  riskLevel?: "low" | "medium" | "high";
+  totalBlockedAmount?: number;
+  keyIssues?: string[];
+  recommendations?: string[];
+  oldestOrderDays?: number;
 }
 
 function createFallback(): AiAnalysis {
   return {
-    summary: "Analyse IA non disponible — clé API Gemini manquante ou erreur",
+    summary: "التحليل الذكي غير متوفر — مفتاح GROQ_API_KEY غير مهيأ أو خطأ",
     riskLevel: "low",
     totalBlockedAmount: 0,
     keyIssues: [],
-    recommendations: ["Configurer GEMINI_API_KEY pour activer l'analyse IA"],
+    recommendations: ["يرجى تهيئة GROQ_API_KEY لتفعيل التحليل الذكي"],
     oldestOrderDays: 0,
   };
 }
@@ -44,20 +49,60 @@ function truncateSuivi(suiviEntries: SuiviEntry[], max = 5): SuiviEntry[] {
   return suiviEntries.slice(0, max);
 }
 
+// Appelle Groq (API compatible OpenAI), force une réponse JSON, et parse le résultat.
+// Retourne null en cas d'erreur réseau/API/parsing (jamais d'exception levée).
+async function callGroq(apiKey: string, prompt: string): Promise<ParsedAnalysis | null> {
+  try {
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "json_object" },
+        temperature: 0.3,
+        max_tokens: 1024,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.warn(`Groq API error (${res.status}): ${body.substring(0, 200)}`);
+      return null;
+    }
+
+    const data: GroqResponse = await res.json();
+    const text = data.choices?.[0]?.message?.content;
+    if (!text) {
+      console.warn("Groq returned empty response");
+      return null;
+    }
+
+    return JSON.parse(text) as ParsedAnalysis;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`Groq API call failed: ${msg}`);
+    return null;
+  }
+}
+
 export async function analyzeSuspendedOrders(
   orders: SuspendedOrder[],
   suiviMap: Record<string, SuiviEntry[]>
 ): Promise<AiAnalysis[]> {
-  const apiKey = GEMINI_API_KEY();
+  const apiKey = GROQ_API_KEY();
   if (!apiKey) {
-    console.warn("GEMINI_API_KEY not set — skipping AI analysis");
+    console.warn("GROQ_API_KEY not set — skipping AI analysis");
     return [createFallback()];
   }
 
   if (orders.length === 0) {
     return [
       {
-        summary: "Aucune commande suspendue — tout est normal",
+        summary: "لا توجد طلبات معلقة — كل شيء طبيعي",
         riskLevel: "low",
         totalBlockedAmount: 0,
         keyIssues: [],
@@ -84,176 +129,168 @@ export async function analyzeSuspendedOrders(
     const ordersInfo = wilayaOrders
       .map(
         (o) =>
-          `- Tracking: ${o.tracking}, Client: ${o.client}, Montant: ${o.montant} DA, Date: ${o.dateColis}, Statut: ${o.statut}, Ville: ${o.ville}${suiviContext[o.tracking] ? `, Suivi: ${suiviContext[o.tracking]}` : ""}`
+          `- Tracking: ${o.tracking}, Client: ${o.client} (${o.phone}), Montant: ${o.montant} DA, Produit: ${o.produit}, Tentatives: ${o.nbrTentatives}, Commune: ${o.commune}, Créée le: ${o.createdAt}${suiviContext[o.tracking] ? `, Suivi: ${suiviContext[o.tracking]}` : ""}`
       )
       .join("\n");
 
     const totalBlocked = wilayaOrders.reduce((s, o) => s + o.montant, 0);
-    const oldest = Math.max(...wilayaOrders.map((o) => daysSince(o.dateColis)));
+    const oldest = Math.max(...wilayaOrders.map((o) => daysSince(o.createdAt)));
 
-    const prompt = `Tu es un analyste logistique pour Noest Express, une entreprise de livraison en Algérie.
+    const prompt = `أنت محلل لوجستي لشركة Noest Express لتوصيل الطرود في الجزائر.
 
-Analyse ces commandes suspendues (bloquées) dans la wilaya "${wilaya}":
+حلل هذه الطلبات المعلقة (suspendues) في ولاية "${wilaya}":
 
 ${ordersInfo}
 
-Règles d'analyse:
-- Montant total bloqué: ${totalBlocked} DA
-- Nombre de commandes: ${wilayaOrders.length}
-- Plus ancienne depuis: ${oldest} jours
+معطيات:
+- المبلغ الإجمالي المحجوز: ${totalBlocked} DA
+- عدد الطلبات: ${wilayaOrders.length}
+- أقدم طلب منذ: ${oldest} يوم
 
-Réponds UNIQUEMENT en JSON avec cette structure exacte:
+أجب فقط بصيغة JSON بهذا الشكل الدقيق (بدون أي نص قبله أو بعده). اكتب محتوى summary و keyIssues و recommendations باللغة العربية:
 {
-  "summary": "Résumé de la situation en 1-2 phrases",
+  "summary": "ملخص الوضع في جملة أو جملتين",
   "riskLevel": "low|medium|high",
   "totalBlockedAmount": ${totalBlocked},
-  "keyIssues": ["problème 1", "problème 2"],
-  "recommendations": ["recommendation 1", "recommendation 2"],
+  "keyIssues": ["مشكلة 1", "مشكلة 2"],
+  "recommendations": ["اقتراح 1", "اقتراح 2"],
   "oldestOrderDays": ${oldest}
 }`;
 
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
-            generationConfig: {
-              responseMimeType: "application/json",
-              temperature: 0.3,
-              maxOutputTokens: 1024,
-            },
-          }),
-        }
-      );
-
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        console.warn(`Gemini API error (${res.status}): ${body.substring(0, 200)}`);
-        analyses.push({
-          summary: `Analyse non disponible pour ${wilaya} — erreur API`,
-          riskLevel: "low",
-          totalBlockedAmount: totalBlocked,
-          keyIssues: [],
-          recommendations: [],
-          oldestOrderDays: oldest,
-        });
-        continue;
-      }
-
-      const data: GeminiResponse = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) {
-        console.warn(`Gemini returned empty response for ${wilaya}`);
-        analyses.push({
-          summary: `Analyse non disponible pour ${wilaya} — réponse vide`,
-          riskLevel: "low",
-          totalBlockedAmount: totalBlocked,
-          keyIssues: [],
-          recommendations: [],
-          oldestOrderDays: oldest,
-        });
-        continue;
-      }
-
-      const parsed = JSON.parse(text);
+    const parsed = await callGroq(apiKey, prompt);
+    if (!parsed) {
       analyses.push({
-        summary: parsed.summary || `Analyse pour ${wilaya}`,
-        riskLevel: parsed.riskLevel || "medium",
-        totalBlockedAmount: parsed.totalBlockedAmount ?? totalBlocked,
-        keyIssues: Array.isArray(parsed.keyIssues) ? parsed.keyIssues : [],
-        recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
-        oldestOrderDays: parsed.oldestOrderDays ?? oldest,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`Gemini API call failed for ${wilaya}: ${msg}`);
-      analyses.push({
-        summary: `Analyse non disponible pour ${wilaya} — erreur: ${msg.substring(0, 100)}`,
+        summary: `التحليل غير متوفر لولاية ${wilaya} — خطأ في الـ API`,
         riskLevel: "low",
         totalBlockedAmount: totalBlocked,
         keyIssues: [],
         recommendations: [],
         oldestOrderDays: oldest,
       });
+      continue;
     }
+
+    analyses.push({
+      summary: parsed.summary || `تحليل ولاية ${wilaya}`,
+      riskLevel: parsed.riskLevel || "medium",
+      totalBlockedAmount: parsed.totalBlockedAmount ?? totalBlocked,
+      keyIssues: Array.isArray(parsed.keyIssues) ? parsed.keyIssues : [],
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
+      oldestOrderDays: parsed.oldestOrderDays ?? oldest,
+    });
   }
 
   // Global analysis across all wilayas
   if (Object.keys(byWilaya).length > 1) {
     const totalAll = orders.reduce((s, o) => s + o.montant, 0);
-    const oldestAll = Math.max(...orders.map((o) => daysSince(o.dateColis)));
+    const oldestAll = Math.max(...orders.map((o) => daysSince(o.createdAt)));
 
-    const prompt = `Tu es un analyste logistique pour Noest Express.
+    const prompt = `أنت محلل لوجستي لشركة Noest Express.
 
-Analyse GLOBALE de ${orders.length} commandes suspendues:
+حلل التحليل العام لـ ${orders.length} طلبات معلقة (suspendues):
 
-Par wilaya:
+حسب الولاية:
 ${Object.entries(byWilaya)
   .map(
     ([w, os]) =>
-      `- ${w}: ${os.length} commandes, ${os.reduce((s, o) => s + o.montant, 0)} DA bloqués`
+      `- ${w}: ${os.length} طلب(ات)، ${os.reduce((s, o) => s + o.montant, 0)} DA محجوزة`
   )
   .join("\n")}
 
-Par client (top):
+حسب العميل (الأكثر):
 ${Object.entries(byClient)
   .sort(([, a], [, b]) => b.length - a.length)
   .slice(0, 5)
-  .map(([c, os]) => `- ${c}: ${os.length} commandes`)
+  .map(([c, os]) => `- ${c}: ${os.length} طلب(ات)`)
   .join("\n")}
 
-Montant total bloqué: ${totalAll} DA
-Plus ancienne commande: ${oldestAll} jours
+المبلغ الإجمالي المحجوز: ${totalAll} DA
+أقدم طلب منذ: ${oldestAll} يوم
 
-Réponds UNIQUEMENT en JSON:
+أجب فقط بصيغة JSON (بدون أي نص قبله أو بعده). اكتب محتوى summary و keyIssues و recommendations باللغة العربية:
 {
-  "summary": "Résumé global",
+  "summary": "ملخص عام للوضعية",
   "riskLevel": "low|medium|high",
   "totalBlockedAmount": ${totalAll},
-  "keyIssues": ["problème 1", "problème 2"],
-  "recommendations": ["recommandation 1", "recommandation 2"],
+  "keyIssues": ["مشكلة 1", "مشكلة 2"],
+  "recommendations": ["اقتراح 1", "اقتراح 2"],
   "oldestOrderDays": ${oldestAll}
 }`;
 
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
-            generationConfig: {
-              responseMimeType: "application/json",
-              temperature: 0.3,
-              maxOutputTokens: 1024,
-            },
-          }),
-        }
-      );
-
-      if (res.ok) {
-        const data: GeminiResponse = await res.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) {
-          const parsed = JSON.parse(text);
-          analyses.push({
-            summary: parsed.summary || "Analyse globale",
-            riskLevel: parsed.riskLevel || "medium",
-            totalBlockedAmount: parsed.totalBlockedAmount ?? totalAll,
-            keyIssues: Array.isArray(parsed.keyIssues) ? parsed.keyIssues : [],
-            recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
-            oldestOrderDays: parsed.oldestOrderDays ?? oldestAll,
-          });
-        }
-      }
-    } catch (err) {
-      console.warn("Global Gemini analysis failed:", err);
+    const parsed = await callGroq(apiKey, prompt);
+    if (parsed) {
+      analyses.push({
+        summary: parsed.summary || "تحليل عام",
+        riskLevel: parsed.riskLevel || "medium",
+        totalBlockedAmount: parsed.totalBlockedAmount ?? totalAll,
+        keyIssues: Array.isArray(parsed.keyIssues) ? parsed.keyIssues : [],
+        recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
+        oldestOrderDays: parsed.oldestOrderDays ?? oldestAll,
+      });
+    } else {
+      console.warn("Global Groq analysis failed");
     }
   }
 
   return analyses;
+}
+
+export async function analyzeNonEncaisseOrders(
+  orders: NonEncaisseOrder[],
+  totalAmount: number
+): Promise<AiAnalysis | null> {
+  const apiKey = GROQ_API_KEY();
+  if (!apiKey || orders.length === 0) {
+    return null;
+  }
+
+  const byWilaya = groupBy(orders, (o) => o.wilaya || "Inconnue");
+  const oldest = Math.max(...orders.map((o) => daysSince(o.livredAt)));
+
+  const prompt = `أنت محلل مالي لشركة Noest Express لتوصيل الطرود في الجزائر.
+
+حلل هذه الطلبات التي تم توصيلها ولكن لم يتم تحصيلها (livré non encaissé):
+
+إجمالي المبلغ غير المحصل: ${totalAmount} DA
+عدد الطلبات: ${orders.length}
+أقدم طلب منذ: ${oldest} يوم
+
+حسب الولاية:
+${Object.entries(byWilaya)
+  .map(
+    ([w, os]) =>
+      `- ${w}: ${os.length} طلب(ات)، ${os.reduce((s, o) => s + o.montant, 0)} DA`
+  )
+  .join("\n")}
+
+حسب عدد المحاولات (أعلى 5):
+${[...orders]
+  .sort((a, b) => b.nbrTentatives - a.nbrTentatives)
+  .slice(0, 5)
+  .map((o) => `- ${o.tracking}: ${o.nbrTentatives} محاولة(ات)، ${o.client}`)
+  .join("\n")}
+
+أجب فقط بصيغة JSON بهذا الشكل الدقيق (بدون أي نص قبله أو بعده). اكتب محتوى summary و keyIssues و recommendations باللغة العربية:
+{
+  "summary": "ملخص وضعية التحصيل في جملة أو جملتين",
+  "riskLevel": "low|medium|high",
+  "totalBlockedAmount": ${totalAmount},
+  "keyIssues": ["مشكلة 1", "مشكلة 2"],
+  "recommendations": ["اقتراح 1", "اقتراح 2"],
+  "oldestOrderDays": ${oldest}
+}`;
+
+  const parsed = await callGroq(apiKey, prompt);
+  if (!parsed) {
+    return null;
+  }
+
+  return {
+    summary: parsed.summary || "تحليل الطلبات غير المحصلة",
+    riskLevel: parsed.riskLevel || "medium",
+    totalBlockedAmount: parsed.totalBlockedAmount ?? totalAmount,
+    keyIssues: Array.isArray(parsed.keyIssues) ? parsed.keyIssues : [],
+    recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
+    oldestOrderDays: parsed.oldestOrderDays ?? oldest,
+  };
 }

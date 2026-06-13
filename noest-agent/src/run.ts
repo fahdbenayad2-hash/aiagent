@@ -1,9 +1,10 @@
 import { config } from "dotenv";
 import path from "path";
 import fs from "fs";
-import { login } from "./auth/login.js";
+import { login, LoginResult } from "./auth/login.js";
 import { getDashboardSnapshot } from "./collectors/dashboardSnapshot.js";
 import { getSuspendedOrders } from "./collectors/suspendedOrders.js";
+import { getNonEncaisseOrders } from "./collectors/nonEncaisseOrders.js";
 import { getSuiviHistoryBatch } from "./collectors/suiviHistory.js";
 import { sendTelegramMessage, sendDailyDigest } from "./notify/telegram.js";
 import { getDb } from "./db/connection.js";
@@ -11,8 +12,8 @@ import { saveSnapshot } from "./db/repositories/snapshotRepo.js";
 import { flattenSnapshot, computeDeltas } from "./analysis/deltas.js";
 import { evaluateAlerts } from "./alerts/rules.js";
 import { buildSuspendedDetails } from "./analysis/suspendedAnalysis.js";
-import { analyzeSuspendedOrders } from "./analysis/aiAnalysis.js";
-import { Snapshot, SuspendedDetails, AiAnalysis } from "./types.js";
+import { analyzeSuspendedOrders, analyzeNonEncaisseOrders } from "./analysis/aiAnalysis.js";
+import { Snapshot, SuspendedDetails, NonEncaisseDetails, AiAnalysis } from "./types.js";
 
 config();
 
@@ -28,13 +29,13 @@ async function main(): Promise<void> {
   try {
     // 1. Auth
     console.log("Logging in to Noest Express...");
-    const cookies = await login();
+    const { cookieString, csrfToken } = await login();
     console.log("Login successful.");
 
     // 2. Collect
     console.log("Reading dashboard data...");
     const { apiResponse, snapshot: dashboard } =
-      await getDashboardSnapshot(cookies);
+      await getDashboardSnapshot(cookieString, csrfToken);
     const dateStr = getDateString();
     dashboard.date = dateStr;
     console.log("Data collected.");
@@ -56,11 +57,11 @@ async function main(): Promise<void> {
 
     if (dashboard.problemes.suspendus > 0) {
       console.log("Fetching suspended orders...");
-      const orders = await getSuspendedOrders(cookies);
+      const orders = await getSuspendedOrders(cookieString, csrfToken);
       if (orders.length > 0) {
         console.log(`Found ${orders.length} suspended orders. Fetching suivi history...`);
         const trackings = orders.map((o) => o.tracking);
-        const suiviMap = await getSuiviHistoryBatch(cookies, trackings);
+        const suiviMap = await getSuiviHistoryBatch(cookieString, trackings, csrfToken);
         suspendedDetails = buildSuspendedDetails(orders, suiviMap);
         console.log(`Total blocked amount: ${suspendedDetails.totalAmount} DA`);
 
@@ -74,6 +75,30 @@ async function main(): Promise<void> {
       }
     } else {
       console.log("No suspended orders to analyze.");
+    }
+
+    // 4c. Phase 2 — Non encaissé orders (livré non encaissé)
+    let nonEncaisseDetails: NonEncaisseDetails | null = null;
+    let nonEncaisseAnalysis: AiAnalysis | null = null;
+
+    if (dashboard.finance.livreNonEncaisse > 0) {
+      console.log("Fetching non-encaisse orders...");
+      const { orders, sumLivred } = await getNonEncaisseOrders(cookieString, csrfToken);
+      if (orders.length > 0) {
+        const totalAmount = orders.reduce((s, o) => s + o.montant, 0);
+        nonEncaisseDetails = { orders, totalAmount, orderCount: orders.length, sumLivred };
+        console.log(`Found ${orders.length} non-encaisse orders. Total: ${totalAmount} DA, Sum livred: ${sumLivred} DA`);
+
+        console.log("Running AI analysis on non-encaisse orders...");
+        nonEncaisseAnalysis = await analyzeNonEncaisseOrders(orders, totalAmount);
+        if (nonEncaisseAnalysis) {
+          console.log(`  Risk: ${nonEncaisseAnalysis.riskLevel} — ${nonEncaisseAnalysis.summary.substring(0, 80)}`);
+        }
+      } else {
+        console.log("No non-encaisse order details retrieved.");
+      }
+    } else {
+      console.log("No non-encaisse orders to analyze.");
     }
 
     // 5. Write JSON output
@@ -105,6 +130,7 @@ async function main(): Promise<void> {
       alerts,
       suspendedDetails,
       analyses,
+      nonEncaisseDetails,
     };
 
     const outputDir = path.resolve("output");
@@ -115,7 +141,7 @@ async function main(): Promise<void> {
 
     // 6. Notify
     console.log("Sending daily digest...");
-    await sendDailyDigest(dashboard, flatMetrics, deltas, alerts, suspendedDetails, analyses);
+    await sendDailyDigest(dashboard, flatMetrics, deltas, alerts, suspendedDetails, analyses, nonEncaisseDetails, nonEncaisseAnalysis);
 
     // 7. Console summary
     const d = dashboard;
@@ -159,6 +185,15 @@ async function main(): Promise<void> {
         for (const a of analyses) {
           console.log(`      [${a.riskLevel}] ${a.summary.substring(0, 100)}`);
         }
+      }
+    }
+    if (nonEncaisseDetails) {
+      console.log(`  Non encaissé:`);
+      console.log(`    Commandes:     ${nonEncaisseDetails.orderCount}`);
+      console.log(`    Total:         ${nonEncaisseDetails.totalAmount.toLocaleString()} DA`);
+      console.log(`    Somme livrée:  ${nonEncaisseDetails.sumLivred.toLocaleString()} DA`);
+      if (nonEncaisseAnalysis) {
+        console.log(`    Analyse IA:    [${nonEncaisseAnalysis.riskLevel}] ${nonEncaisseAnalysis.summary.substring(0, 100)}`);
       }
     }
     console.log("================================");

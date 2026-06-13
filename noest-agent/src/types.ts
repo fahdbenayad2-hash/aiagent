@@ -102,6 +102,7 @@ export interface Snapshot {
   alerts: string[];
   suspendedDetails: SuspendedDetails | null;
   analyses: AiAnalysis[];
+  nonEncaisseDetails: NonEncaisseDetails | null;
 }
 
 // Alert rule
@@ -115,17 +116,21 @@ export interface AlertRule {
   ) => string | null;
 }
 
-// Phase 2 — Suspended orders
+// Phase 2 — Suspended orders (champs réels de /livraisons/suspendu/list)
 export interface SuspendedOrder {
   tracking: string;
   client: string;
-  montant: number;
-  dateColis: string;
-  statut: string;
-  ville: string;
+  phone: string;
   wilaya: string;
-  totalPercu: number;
-  aPercu: number;
+  commune: string;
+  adresse: string;
+  produit: string;
+  montant: number;
+  nbrTentatives: number;
+  driver: { name: string; phone: string } | null;
+  createdAt: string;
+  expedierAt: string;
+  deliverAt: string | null;
 }
 
 export interface SuiviEntry {
@@ -150,8 +155,40 @@ export interface AiAnalysis {
   oldestOrderDays: number;
 }
 
+// Phase 2 — Non encaissé (livré non encaissé, /livraison/non/encaisse/list)
+export interface NonEncaisseOrder {
+  tracking: string;
+  reference: string | null;
+  client: string;
+  phone: string;
+  phone_2: string | null;
+  wilaya: string;
+  commune: string;
+  wilaya_id: number;
+  adresse: string;
+  produit: string;
+  poids: string | null;
+  montant: number;
+  remarque: string | null;
+  nbrTentatives: number;
+  stopDesk: number;
+  driver: { name: string; phone: string } | null;
+  createdAt: string;
+  expedierAt: string;
+  livredAt: string;
+  sumLivred: number;
+}
+
+export interface NonEncaisseDetails {
+  orders: NonEncaisseOrder[];
+  totalAmount: number;
+  orderCount: number;
+  sumLivred: number;
+}
+
 // Phase 2 fields on Snapshot
 export interface Phase2Data {
   suspendedDetails: SuspendedDetails | null;
   analyses: AiAnalysis[];
+  nonEncaisseDetails: NonEncaisseDetails | null;
 }
