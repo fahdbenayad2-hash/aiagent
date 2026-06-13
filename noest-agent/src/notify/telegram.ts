@@ -1,4 +1,5 @@
 import { DashboardSnapshot, FlatMetrics, SuspendedDetails, NonEncaisseDetails, AiAnalysis } from "../types.js";
+import { ProductsStockDetails } from "../collectors/productsStock.js";
 
 const TG_TOKEN = () => process.env.TELEGRAM_BOT_TOKEN;
 const TG_CHAT = () => process.env.TELEGRAM_CHAT_ID;
@@ -58,7 +59,7 @@ export async function sendDailyDigest(
   suspendedDetails?: SuspendedDetails | null,
   analyses?: AiAnalysis[],
   nonEncaisseDetails?: NonEncaisseDetails | null,
-  nonEncaisseAnalysis?: AiAnalysis | null
+  stockDetails?: ProductsStockDetails | null
 ): Promise<void> {
   const token = TG_TOKEN();
   const chatId = TG_CHAT();
@@ -151,24 +152,40 @@ export async function sendDailyDigest(
     }
     lines.push(`<b>Total non encaissé: ${nonEncaisseDetails.totalAmount.toLocaleString()} DA</b>`);
     lines.push(`<b>Somme livrée: ${nonEncaisseDetails.sumLivred.toLocaleString()} DA</b>`);
-
-    if (nonEncaisseAnalysis) {
-      lines.push("");
-      const icon = nonEncaisseAnalysis.riskLevel === "high" ? "🔴" : nonEncaisseAnalysis.riskLevel === "medium" ? "🟡" : "ℹ️";
-      lines.push(`${icon} <b>Analyse:</b> ${nonEncaisseAnalysis.summary}`);
-      if (nonEncaisseAnalysis.keyIssues.length > 0) {
-        for (const issue of nonEncaisseAnalysis.keyIssues.slice(0, 3)) {
-          lines.push(`  • ${issue}`);
-        }
-      }
-      if (nonEncaisseAnalysis.recommendations.length > 0) {
-        for (const rec of nonEncaisseAnalysis.recommendations.slice(0, 2)) {
-          lines.push(`  → ${rec}`);
-        }
-      }
-    }
   } else {
     lines.push("✅ Aucune commande non encaissée");
+  }
+
+  if (nonEncaisseDetails && nonEncaisseDetails.orderCount > 0) {
+    lines.push(
+      "",
+      `💳 <b>Livré non encaissé (${nonEncaisseDetails.orderCount} commandes)</b>`,
+      `<b>Total à récupérer: ${nonEncaisseDetails.totalAmount.toLocaleString()} DA</b>`
+    );
+  }
+
+  if (stockDetails && stockDetails.totalProducts > 0) {
+    const stockLines: string[] = [
+      "",
+      `📦 <b>Stock Produits (${stockDetails.totalProducts} produits)</b>`,
+      `Stock disponible total: ${stockDetails.totalStockDisponible} unités`,
+    ];
+    if (stockDetails.outOfStock.length > 0) {
+      stockLines.push(`🔴 <b>Épuisés (${stockDetails.outOfStock.length}):</b>`);
+      for (const p of stockDetails.outOfStock.slice(0, 5)) {
+        stockLines.push(`  • ${p.title || p.reference} — retours: ${p.retours}`);
+      }
+    }
+    if (stockDetails.lowStock.length > 0) {
+      stockLines.push(`🟡 <b>Stock bas ≤5 (${stockDetails.lowStock.length}):</b>`);
+      for (const p of stockDetails.lowStock.slice(0, 5)) {
+        stockLines.push(`  • ${p.title || p.reference}: ${p.stockDisponible} unités`);
+      }
+    }
+    if (stockDetails.outOfStock.length === 0 && stockDetails.lowStock.length === 0) {
+      stockLines.push("✅ Niveaux de stock normaux");
+    }
+    lines.push(...stockLines);
   }
 
   lines.push("", "🔔 <b>Alertes</b>");

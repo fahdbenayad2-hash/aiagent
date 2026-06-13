@@ -5,6 +5,7 @@ import { login, LoginResult } from "./auth/login.js";
 import { getDashboardSnapshot } from "./collectors/dashboardSnapshot.js";
 import { getSuspendedOrders } from "./collectors/suspendedOrders.js";
 import { getNonEncaisseOrders } from "./collectors/nonEncaisseOrders.js";
+import { getProductsStock, ProductsStockDetails } from "./collectors/productsStock.js";
 import { getSuiviHistoryBatch } from "./collectors/suiviHistory.js";
 import { sendTelegramMessage, sendDailyDigest } from "./notify/telegram.js";
 import { getDb } from "./db/connection.js";
@@ -80,6 +81,7 @@ async function main(): Promise<void> {
     // 4c. Phase 2 — Non encaissé orders (livré non encaissé)
     let nonEncaisseDetails: NonEncaisseDetails | null = null;
     let nonEncaisseAnalysis: AiAnalysis | null = null;
+    let stockDetails: ProductsStockDetails | null = null;
 
     if (dashboard.finance.livreNonEncaisse > 0) {
       console.log("Fetching non-encaisse orders...");
@@ -99,6 +101,20 @@ async function main(): Promise<void> {
       }
     } else {
       console.log("No non-encaisse orders to analyze.");
+    }
+
+    // 4d. Phase 3 — Products / Stock
+    console.log("Fetching products stock...");
+    stockDetails = await getProductsStock(cookieString, csrfToken);
+    console.log(`Found ${stockDetails.totalProducts} products. Stock dispo: ${stockDetails.totalStockDisponible} units.`);
+    if (stockDetails.outOfStock.length > 0) {
+      console.log(`  🔴 ${stockDetails.outOfStock.length} produit(s) épuisé(s)!`);
+      for (const p of stockDetails.outOfStock.slice(0, 5)) {
+        console.log(`     - ${p.title || p.reference}`);
+      }
+    }
+    if (stockDetails.lowStock.length > 0) {
+      console.log(`  🟡 ${stockDetails.lowStock.length} produit(s) stock bas (≤5).`);
     }
 
     // 5. Write JSON output
@@ -141,7 +157,7 @@ async function main(): Promise<void> {
 
     // 6. Notify
     console.log("Sending daily digest...");
-    await sendDailyDigest(dashboard, flatMetrics, deltas, alerts, suspendedDetails, analyses, nonEncaisseDetails, nonEncaisseAnalysis);
+    await sendDailyDigest(dashboard, flatMetrics, deltas, alerts, suspendedDetails, analyses, nonEncaisseDetails, stockDetails);
 
     // 7. Console summary
     const d = dashboard;
